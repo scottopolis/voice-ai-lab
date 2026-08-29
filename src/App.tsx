@@ -1,25 +1,206 @@
-import { useEffect, useState } from 'react'
-type Provider={id:string;provider:string;model:string;type:string;fidelity:'exact'|'companion'|'unavailable';status:string;ready:boolean;requirements:Record<string,boolean>;voices:{id:string;label:string}[];note:string}
-const benchmark='Dr. Nguyen prescribed 0.25 milligrams of semaglutide; ticket QZ-407B costs $1,209.05.'
-export default function App(){
- const [providers,setProviders]=useState<Provider[]>([]),[index,setIndex]=useState(0),[text,setText]=useState(benchmark),[voice,setVoice]=useState(''),[audio,setAudio]=useState(''),[loading,setLoading]=useState(false),[error,setError]=useState('')
- const provider=providers[index]
- const move=(step:number)=>setIndex(i=>(i+step+providers.length)%providers.length)
- useEffect(()=>{fetch('/api/providers').then(r=>r.json()).then(d=>setProviders(d.providers)).catch(()=>setError('Could not load provider registry.'))},[])
- useEffect(()=>{setVoice(provider?.voices[0]?.id||'');setError('');if(audio)URL.revokeObjectURL(audio);setAudio('')},[provider?.id]) // eslint-disable-line react-hooks/exhaustive-deps
- useEffect(()=>{const key=(e:KeyboardEvent)=>{if(e.key==='ArrowLeft')move(-1);if(e.key==='ArrowRight')move(1)};window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key)})
- async function generate(){if(!provider)return;setLoading(true);setError('');if(audio)URL.revokeObjectURL(audio);setAudio('');try{const r=await fetch('/api/generate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({providerId:provider.id,text,voice:voice||undefined})});if(!r.ok){const j=await r.json();throw new Error(j.error?.message||'Generation failed.')}setAudio(URL.createObjectURL(await r.blob()))}catch(e){setError(e instanceof Error?e.message:'Generation failed.')}finally{setLoading(false)}}
- if(!provider)return <main><p className="eyebrow">Voice API field lab</p><h1>Loading the shortlist…</h1>{error&&<p role="alert">{error}</p>}</main>
- return <main>
-  <header><div><p className="eyebrow">Voice API field lab · {index+1} / {providers.length}</p><h1>Hear the model,<br/><em>not the marketing.</em></h1></div><div className="nav"><button aria-label="Previous provider" onClick={()=>move(-1)}>←</button><button aria-label="Next provider" onClick={()=>move(1)}>→</button></div></header>
-  <section className="card" aria-live="polite"><div className="title"><div><p className="provider">{provider.provider}</p><h2>{provider.model}</h2></div><span className={`badge ${provider.fidelity}`}>{provider.fidelity==='exact'?'Exact model':provider.fidelity==='companion'?'TTS companion / cascade':'Unavailable in clip lab'}</span></div>
-   <div className="facts"><span>TYPE <b>{provider.type}</b></span><span>STATUS <b>{provider.status}</b></span><span>CONFIG <b className={provider.ready?'ok':'muted'}>{provider.ready?'Ready':'Needs setup'}</b></span></div>
-   <p className="note">{provider.note}</p>
-   <label htmlFor="script">Benchmark text</label><textarea id="script" value={text} onChange={e=>setText(e.target.value)} maxLength={2000}/>
-   {provider.voices.length>0&&<><label htmlFor="voice">Voice</label><select id="voice" value={voice} onChange={e=>setVoice(e.target.value)}>{provider.voices.map(v=><option key={v.id} value={v.id}>{v.label}</option>)}</select></>}
-   <details><summary>Credential readiness</summary><ul>{Object.entries(provider.requirements).map(([k,v])=><li key={k}><span>{k}</span><b>{v?'present':'missing'}</b></li>)}</ul><p>Only presence booleans leave the server. Values never do.</p></details>
-   <button className="generate" disabled={loading||!provider.ready||provider.fidelity==='unavailable'||!text.trim()} onClick={generate}>{loading?'Generating…':'Generate sample'}</button>
-   {error&&<p className="error" role="alert">{error}</p>}{audio&&<audio controls autoPlay src={audio} aria-label={`${provider.provider} generated sample`}/>} 
-  </section><footer>Use ← → to move · fixed-copy audition, not a live-agent score</footer>
- </main>
+import { useEffect, useRef, useState } from 'react'
+import { PipecatClient, type RTVIMessage, type TransportState } from '@pipecat-ai/client-js'
+import { SmallWebRTCTransport } from '@pipecat-ai/small-webrtc-transport'
+
+type Option = { id: string; label: string }
+type Voice = Option & { model: string; ready: boolean; missing: string[] }
+type Config = {
+  core: { ready: boolean; missing: string[] }
+  models: Option[]
+  voices: Voice[]
+}
+type Message = { role: 'you' | 'agent'; text: string }
+
+const messageText = (message: RTVIMessage) => {
+  const data = message.data as { message?: unknown } | undefined
+  return typeof data?.message === 'string' ? data.message : 'The voice session failed.'
+}
+
+export default function App() {
+  const [config, setConfig] = useState<Config | null>(null)
+  const [model, setModel] = useState('')
+  const [voice, setVoice] = useState('')
+  const [state, setState] = useState<TransportState>('disconnected')
+  const [activity, setActivity] = useState('Ready to connect')
+  const [messages, setMessages] = useState<Message[]>([])
+  const [userDraft, setUserDraft] = useState('')
+  const [botDraft, setBotDraft] = useState('')
+  const [error, setError] = useState('')
+  const clientRef = useRef<PipecatClient | null>(null)
+  const botDraftRef = useRef('')
+
+  useEffect(() => {
+    fetch('/api/config')
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Could not load the voice configuration.')
+        return response.json() as Promise<Config>
+      })
+      .then((next) => {
+        setConfig(next)
+        setModel(next.models[0]?.id ?? '')
+        setVoice(next.voices.find((item) => item.ready)?.id ?? next.voices[0]?.id ?? '')
+      })
+      .catch((cause: unknown) => {
+        setError(cause instanceof Error ? cause.message : 'Could not load the voice configuration.')
+      })
+
+    return () => {
+      void clientRef.current?.disconnect()
+    }
+  }, [])
+
+  const selectedVoice = config?.voices.find((item) => item.id === voice)
+  const connected = state === 'ready' || state === 'connected'
+  const busy = !['disconnected', 'connected', 'ready', 'error'].includes(state)
+  const ready = Boolean(config?.core.ready && selectedVoice?.ready)
+
+  async function connect() {
+    setError('')
+    setActivity('Connecting')
+    setMessages([])
+    setUserDraft('')
+    setBotDraft('')
+    botDraftRef.current = ''
+
+    const client = new PipecatClient({
+      transport: new SmallWebRTCTransport(),
+      enableMic: true,
+      enableCam: false,
+      callbacks: {
+        onTransportStateChanged: setState,
+        onBotReady: () => setActivity('Listening'),
+        onUserStartedSpeaking: () => setActivity('Listening to you'),
+        onUserStoppedSpeaking: () => setActivity('Thinking'),
+        onBotStartedSpeaking: () => setActivity('Agent speaking'),
+        onBotStoppedSpeaking: () => setActivity('Listening'),
+        onUserTranscript: (data) => {
+          if (data.final) {
+            setMessages((current) => [...current, { role: 'you', text: data.text }])
+            setUserDraft('')
+          } else {
+            setUserDraft(data.text)
+          }
+        },
+        onBotLlmStarted: () => {
+          botDraftRef.current = ''
+          setBotDraft('')
+        },
+        onBotLlmText: (data) => {
+          botDraftRef.current += data.text
+          setBotDraft(botDraftRef.current)
+        },
+        onBotLlmStopped: () => {
+          const text = botDraftRef.current.trim()
+          if (text) setMessages((current) => [...current, { role: 'agent', text }])
+          botDraftRef.current = ''
+          setBotDraft('')
+        },
+        onError: (message) => setError(messageText(message)),
+        onDisconnected: () => setActivity('Ready to connect'),
+      },
+    })
+    clientRef.current = client
+
+    try {
+      await client.initDevices()
+      await client.connect({
+        webrtcRequestParams: {
+          endpoint: '/api/offer',
+          requestData: { model, voice },
+        },
+      })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not start the voice session.')
+      await client.disconnect()
+      clientRef.current = null
+    }
+  }
+
+  async function disconnect() {
+    await clientRef.current?.disconnect()
+    clientRef.current = null
+  }
+
+  if (!config && !error) {
+    return <main className="loading">Loading voice providers…</main>
+  }
+
+  return (
+    <main>
+      <header>
+        <div>
+          <p className="eyebrow">Conversational voice lab</p>
+          <h1>
+            Pick a brain.<br />
+            <em>Swap the voice.</em>
+          </h1>
+          <p className="intro">
+            One live Deepgram → OpenAI → voice pipeline, orchestrated by Pipecat.
+          </p>
+        </div>
+        <div className={`status ${connected ? 'live' : ''}`}>
+          <span /> {activity}
+        </div>
+      </header>
+
+      <section className="controls" aria-label="Conversation configuration">
+        <label>
+          GPT model
+          <select value={model} onChange={(event) => setModel(event.target.value)} disabled={connected || busy}>
+            {config?.models.map((item) => (
+              <option key={item.id} value={item.id}>{item.label}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Voice provider
+          <select value={voice} onChange={(event) => setVoice(event.target.value)} disabled={connected || busy}>
+            {config?.voices.map((item) => (
+              <option key={item.id} value={item.id} disabled={!item.ready}>
+                {item.label} · {item.model}{item.ready ? '' : ' · needs key'}
+              </option>
+            ))}
+          </select>
+        </label>
+        {connected ? (
+          <button className="call stop" onClick={disconnect} disabled={busy}>End conversation</button>
+        ) : (
+          <button className="call" onClick={connect} disabled={busy || !ready}>
+            {busy ? 'Connecting…' : 'Start conversation'}
+          </button>
+        )}
+      </section>
+
+      {!ready && config && (
+        <aside className="setup">
+          Add the missing values to <code>.env</code> and restart: {' '}
+          {[...config.core.missing, ...(selectedVoice?.missing ?? [])].filter((item, index, all) => all.indexOf(item) === index).join(', ')}
+        </aside>
+      )}
+      {error && <p className="error" role="alert">{error}</p>}
+
+      <section className="conversation" aria-live="polite">
+        {messages.length === 0 && !userDraft && !botDraft ? (
+          <div className="empty">
+            <div className="orb"><span /></div>
+            <h2>{connected ? 'Say something.' : 'Your conversation appears here.'}</h2>
+            <p>Interrupt naturally—the agent should stop and listen.</p>
+          </div>
+        ) : (
+          <div className="transcript">
+            {messages.map((message, index) => (
+              <article className={message.role} key={`${message.role}-${index}`}>
+                <small>{message.role === 'you' ? 'You' : selectedVoice?.label}</small>
+                <p>{message.text}</p>
+              </article>
+            ))}
+            {userDraft && <article className="you draft"><small>You</small><p>{userDraft}</p></article>}
+            {botDraft && <article className="agent draft"><small>{selectedVoice?.label}</small><p>{botDraft}</p></article>}
+          </div>
+        )}
+      </section>
+
+      <footer>Selections lock while connected. End the conversation to swap either model.</footer>
+    </main>
+  )
 }
