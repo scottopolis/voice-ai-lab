@@ -44,6 +44,14 @@ sentences. Do not use markdown, emoji, lists, or stage directions."""
 class ModelOption:
     id: str
     label: str
+    description: str
+
+
+@dataclass(frozen=True)
+class VoicePreset:
+    id: str
+    label: str
+    description: str
 
 
 @dataclass(frozen=True)
@@ -52,7 +60,10 @@ class VoiceOption:
     label: str
     model: str
     required_env: tuple[str, ...]
-    create: Callable[[], object]
+    description: str
+    voices: tuple[VoicePreset, ...]
+    default_voice: str
+    create: Callable[[str], object]
 
     @property
     def ready(self) -> bool:
@@ -69,6 +80,9 @@ class PipelineOption:
     label: str
     model: str
     required_env: tuple[str, ...]
+    description: str
+    voices: tuple[VoicePreset, ...] = ()
+    default_voice: str = ""
 
     @property
     def ready(self) -> bool:
@@ -80,9 +94,19 @@ class PipelineOption:
 
 
 LLM_MODELS = (
-    ModelOption("gpt-5.6-terra", "GPT-5.6 Terra"),
-    ModelOption("gpt-5.6-luna", "GPT-5.6 Luna"),
-    ModelOption("gpt-5.4-mini", "GPT-5.4 Mini"),
+    ModelOption("gpt-5.6-terra", "GPT-5.6 Terra", "Flagship reasoning model"),
+    ModelOption("gpt-5.6-luna", "GPT-5.6 Luna", "Fast, balanced reasoning"),
+    ModelOption("gpt-5.4-mini", "GPT-5.4 Mini", "Lowest-latency GPT option"),
+)
+
+OPENAI_REALTIME_VOICES = (
+    VoicePreset("marin", "Marin", "Natural and conversational"),
+    VoicePreset("cedar", "Cedar", "Warm and grounded"),
+)
+GEMINI_LIVE_VOICES = (
+    VoicePreset("Kore", "Kore", "Firm · female"),
+    VoicePreset("Puck", "Puck", "Upbeat · male"),
+    VoicePreset("Aoede", "Aoede", "Breezy · female"),
 )
 
 
@@ -93,24 +117,30 @@ def _pipeline_options() -> tuple[PipelineOption, ...]:
             label="Swappable cascade",
             model="Deepgram → GPT → selected voice",
             required_env=("OPENAI_API_KEY", "DEEPGRAM_API_KEY"),
+            description="Separate speech recognition, GPT reasoning, and speech synthesis",
         ),
         PipelineOption(
             id="openai-realtime",
             label="OpenAI Realtime",
             model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1"),
             required_env=("OPENAI_API_KEY",),
+            description="OpenAI's native, low-latency speech-to-speech model",
+            voices=OPENAI_REALTIME_VOICES,
+            default_voice="marin",
         ),
         PipelineOption(
             id="gemini-live",
             label="Gemini Live",
             model=os.getenv("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview"),
             required_env=("GOOGLE_API_KEY",),
+            description="Google's native, bidirectional Live API",
+            voices=GEMINI_LIVE_VOICES,
+            default_voice="Kore",
         ),
     )
 
 
 def _voice_options() -> tuple[VoiceOption, ...]:
-    eleven_voice = os.getenv("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
     cartesia_voice = os.getenv(
         "CARTESIA_VOICE_ID", "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4"
     )
@@ -122,23 +152,37 @@ def _voice_options() -> tuple[VoiceOption, ...]:
             label="ElevenLabs",
             model=os.getenv("ELEVENLABS_MODEL", "eleven_v3_conversational"),
             required_env=("ELEVENLABS_API_KEY",),
-            create=lambda: ElevenLabsDialogueTTSService(
+            description="Eleven v3 expressive conversational dialogue",
+            voices=(
+                VoicePreset("21m00Tcm4TlvDq8ikWAM", "Rachel", "Warm, expressive · American female"),
+                VoicePreset("IRHApOXLvnW57QJPQH2P", "Adam", "Dark, tough · American male"),
+                VoicePreset("JBFqnCBsd6RMkjVDRZzb", "George", "Warm narration · British male"),
+            ),
+            default_voice="21m00Tcm4TlvDq8ikWAM",
+            create=lambda selected_voice: ElevenLabsDialogueTTSService(
                 api_key=os.environ["ELEVENLABS_API_KEY"],
                 settings=ElevenLabsDialogueTTSService.Settings(
                     model=os.getenv("ELEVENLABS_MODEL", "eleven_v3_conversational"),
-                    voice=eleven_voice,
+                    voice=selected_voice,
                 ),
             ),
         ),
         VoiceOption(
             id="deepgram",
             label="Deepgram",
-            model=os.getenv("DEEPGRAM_TTS_VOICE", "flux-heather-en"),
+            model="Flux TTS",
             required_env=("DEEPGRAM_API_KEY",),
-            create=lambda: DeepgramFluxTTSService(
+            description="Flux streaming conversational TTS",
+            voices=(
+                VoicePreset("flux-heather-en", "Heather", "Clear, energetic · American female"),
+                VoicePreset("flux-alexis-en", "Alexis", "Calm, caring · American female"),
+                VoicePreset("flux-miles-en", "Miles", "Calm, professional · American male"),
+            ),
+            default_voice="flux-heather-en",
+            create=lambda selected_voice: DeepgramFluxTTSService(
                 api_key=os.environ["DEEPGRAM_API_KEY"],
                 settings=DeepgramFluxTTSService.Settings(
-                    voice=os.getenv("DEEPGRAM_TTS_VOICE", "flux-heather-en")
+                    voice=selected_voice
                 ),
             ),
         ),
@@ -147,12 +191,15 @@ def _voice_options() -> tuple[VoiceOption, ...]:
             label="Cartesia",
             model=os.getenv("CARTESIA_MODEL", "sonic-3.6-2026-08-27"),
             required_env=("CARTESIA_API_KEY",),
-            create=lambda: CartesiaTTSService(
+            description="Sonic low-latency streaming TTS",
+            voices=(VoicePreset(cartesia_voice, "Configured Cartesia voice", "Server-configured voice"),),
+            default_voice=cartesia_voice,
+            create=lambda selected_voice: CartesiaTTSService(
                 api_key=os.environ["CARTESIA_API_KEY"],
                 cartesia_version=os.getenv("CARTESIA_API_VERSION"),
                 settings=CartesiaTTSService.Settings(
                     model=os.getenv("CARTESIA_MODEL", "sonic-3.6-2026-08-27"),
-                    voice=cartesia_voice,
+                    voice=selected_voice,
                 ),
             ),
         ),
@@ -161,9 +208,12 @@ def _voice_options() -> tuple[VoiceOption, ...]:
             label="Hume",
             model="Octave 2",
             required_env=("HUME_API_KEY", "HUME_VOICE_ID"),
-            create=lambda: HumeTTSService(
+            description="Octave expressive speech synthesis",
+            voices=(VoicePreset(hume_voice, "Configured Hume voice", "Server-configured voice"),),
+            default_voice=hume_voice,
+            create=lambda selected_voice: HumeTTSService(
                 api_key=os.environ["HUME_API_KEY"],
-                settings=HumeTTSService.Settings(voice=hume_voice),
+                settings=HumeTTSService.Settings(voice=selected_voice),
             ),
         ),
         VoiceOption(
@@ -171,11 +221,14 @@ def _voice_options() -> tuple[VoiceOption, ...]:
             label="OpenAI",
             model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
             required_env=("OPENAI_API_KEY",),
-            create=lambda: OpenAITTSService(
+            description="OpenAI text-to-speech",
+            voices=(VoicePreset(os.getenv("OPENAI_TTS_VOICE", "marin"), "Configured OpenAI voice", "Server-configured voice"),),
+            default_voice=os.getenv("OPENAI_TTS_VOICE", "marin"),
+            create=lambda selected_voice: OpenAITTSService(
                 api_key=os.environ["OPENAI_API_KEY"],
                 settings=OpenAITTSService.Settings(
                     model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
-                    voice=os.getenv("OPENAI_TTS_VOICE", "marin"),
+                    voice=selected_voice,
                 ),
             ),
         ),
@@ -184,10 +237,17 @@ def _voice_options() -> tuple[VoiceOption, ...]:
             label="xAI",
             model="Streaming TTS",
             required_env=("XAI_API_KEY",),
-            create=lambda: XAITTSService(
+            description="xAI bidirectional streaming TTS",
+            voices=(
+                VoicePreset("eve", "Eve", "Energetic and upbeat"),
+                VoicePreset("ara", "Ara", "Warm and friendly"),
+                VoicePreset("rex", "Rex", "Confident and clear"),
+            ),
+            default_voice="eve",
+            create=lambda selected_voice: XAITTSService(
                 api_key=os.environ["XAI_API_KEY"],
                 settings=XAITTSService.Settings(
-                    voice=os.getenv("XAI_TTS_VOICE", "eve")
+                    voice=selected_voice
                 ),
             ),
         ),
@@ -203,10 +263,13 @@ def public_config() -> dict:
                 "model": pipeline.model,
                 "ready": pipeline.ready,
                 "missing": pipeline.missing,
+                "description": pipeline.description,
+                "voices": [voice.__dict__ for voice in pipeline.voices],
+                "defaultVoice": pipeline.default_voice,
             }
             for pipeline in _pipeline_options()
         ],
-        "models": [{"id": model.id, "label": model.label} for model in LLM_MODELS],
+        "models": [model.__dict__ for model in LLM_MODELS],
         "voices": [
             {
                 "id": voice.id,
@@ -214,6 +277,9 @@ def public_config() -> dict:
                 "model": voice.model,
                 "ready": voice.ready,
                 "missing": voice.missing,
+                "description": voice.description,
+                "voices": [preset.__dict__ for preset in voice.voices],
+                "defaultVoice": voice.default_voice,
             }
             for voice in _voice_options()
         ],
@@ -221,7 +287,7 @@ def public_config() -> dict:
 
 
 def validate_selection(
-    pipeline_id: str, model_id: str, voice_id: str
+    pipeline_id: str, model_id: str, provider_id: str, voice_id: str
 ) -> tuple[PipelineOption, VoiceOption | None]:
     pipeline = next(
         (item for item in _pipeline_options() if item.id == pipeline_id), None
@@ -234,14 +300,18 @@ def validate_selection(
             raise ValueError(
                 f"Missing environment variables: {', '.join(pipeline.missing)}"
             )
+        if voice_id not in {item.id for item in pipeline.voices}:
+            raise ValueError("Unknown voice for selected pipeline")
         return pipeline, None
 
     if model_id not in {model.id for model in LLM_MODELS}:
         raise ValueError("Unknown GPT model")
 
-    voice = next((item for item in _voice_options() if item.id == voice_id), None)
+    voice = next((item for item in _voice_options() if item.id == provider_id), None)
     if voice is None:
         raise ValueError("Unknown voice provider")
+    if voice_id not in {item.id for item in voice.voices}:
+        raise ValueError("Unknown voice for selected provider")
 
     missing = [*pipeline.missing, *voice.missing]
     if missing:
@@ -250,14 +320,14 @@ def validate_selection(
 
 
 async def run_voice_agent(
-    connection, pipeline_id: str, model_id: str, voice_id: str
+    connection, pipeline_id: str, model_id: str, provider_id: str, voice_id: str
 ) -> None:
-    pipeline_option, voice = validate_selection(pipeline_id, model_id, voice_id)
+    pipeline_option, voice = validate_selection(pipeline_id, model_id, provider_id, voice_id)
     logger.info(
         "Starting voice session: pipeline={} model={} voice={}",
         pipeline_id,
         model_id,
-        voice_id,
+        f"{provider_id}/{voice_id}",
     )
 
     transport = SmallWebRTCTransport(
@@ -289,7 +359,7 @@ async def run_voice_agent(
             stt,
             user_aggregator,
             llm,
-            voice.create(),
+            voice.create(voice_id),
             transport.output(),
             assistant_aggregator,
         ]
@@ -307,7 +377,7 @@ async def run_voice_agent(
                             noise_reduction=InputAudioNoiseReduction(type="near_field"),
                         ),
                         output=AudioOutput(
-                            voice=os.getenv("OPENAI_REALTIME_VOICE", "marin")
+                            voice=voice_id
                         ),
                     )
                 ),
@@ -326,7 +396,7 @@ async def run_voice_agent(
             api_key=os.environ["GOOGLE_API_KEY"],
             settings=GeminiLiveLLMService.Settings(
                 model=pipeline_option.model,
-                voice=os.getenv("GEMINI_LIVE_VOICE", "Kore"),
+                voice=voice_id,
                 system_instruction=SYSTEM_INSTRUCTION,
             ),
             inference_on_context_initialization=False,

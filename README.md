@@ -22,9 +22,9 @@ cp .env.example .env
 npm run dev
 ```
 
-Open the Vite URL printed in the terminal, choose a pipeline, then select **Start conversation** and allow microphone access. The cascade also lets you choose its GPT model and voice provider. End the conversation before changing selections.
+Open the Vite URL printed in the terminal, choose a pipeline, model/provider where applicable, and voice, then select **Start conversation** and allow microphone access. End the conversation before changing selections.
 
-API keys stay in the Python process. The frontend receives only readiness booleans and missing environment-variable names.
+API keys stay in the Python process. The frontend receives only public model/voice IDs and labels, readiness booleans, and missing environment-variable names.
 
 ## Available choices
 
@@ -48,7 +48,9 @@ Voice providers:
 - OpenAI speech
 - xAI streaming TTS
 
-Voice IDs and model snapshots can be changed in `.env`. The cascade requires `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, and the selected voice provider's key. OpenAI Realtime only requires `OPENAI_API_KEY`; Gemini Live only requires `GOOGLE_API_KEY`.
+Built-in voice choices include Rachel, Adam, and George for ElevenLabs; Heather, Alexis, and Miles for Deepgram Flux; Eve, Ara, and Rex for xAI; Marin and Cedar for OpenAI Realtime; and Kore, Puck, and Aoede for Gemini Live. Rachel is now the ElevenLabs default because the previous default, George, is British; George remains selectable. Provider voice IDs are intentionally defined server-side rather than overridden in `.env`. Other providers retain their existing server-configured voice environment variables.
+
+The cascade requires `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, and the selected voice provider's key. OpenAI Realtime only requires `OPENAI_API_KEY`; Gemini Live only requires `GOOGLE_API_KEY`.
 
 ## Useful commands
 

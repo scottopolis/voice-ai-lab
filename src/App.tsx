@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { PipecatClient, type RTVIMessage, type TransportState } from '@pipecat-ai/client-js'
 import { SmallWebRTCTransport } from '@pipecat-ai/small-webrtc-transport'
 
-type Option = { id: string; label: string }
-type Voice = Option & { model: string; ready: boolean; missing: string[] }
+type Option = { id: string; label: string; description: string }
+type VoiceChoice = Option
+type Voice = Option & { model: string; ready: boolean; missing: string[]; voices: VoiceChoice[]; defaultVoice: string }
 type AgentPipeline = Voice
 type Config = {
   pipelines: AgentPipeline[]
@@ -21,6 +22,7 @@ export default function App() {
   const [config, setConfig] = useState<Config | null>(null)
   const [pipeline, setPipeline] = useState('cascade')
   const [model, setModel] = useState('')
+  const [provider, setProvider] = useState('')
   const [voice, setVoice] = useState('')
   const [state, setState] = useState<TransportState>('disconnected')
   const [activity, setActivity] = useState('Ready to connect')
@@ -39,10 +41,17 @@ export default function App() {
         return response.json() as Promise<Config>
       })
       .then((next) => {
+        const initialPipeline = next.pipelines.find((item) => item.ready) ?? next.pipelines[0]
+        const initialProvider = next.voices.find((item) => item.ready) ?? next.voices[0]
         setConfig(next)
-        setPipeline(next.pipelines.find((item) => item.ready)?.id ?? next.pipelines[0]?.id ?? '')
+        setPipeline(initialPipeline?.id ?? '')
         setModel(next.models[0]?.id ?? '')
-        setVoice(next.voices.find((item) => item.ready)?.id ?? next.voices[0]?.id ?? '')
+        setProvider(initialProvider?.id ?? '')
+        setVoice(
+          initialPipeline?.id === 'cascade'
+            ? initialProvider?.defaultVoice ?? ''
+            : initialPipeline?.defaultVoice ?? '',
+        )
       })
       .catch((cause: unknown) => {
         setError(cause instanceof Error ? cause.message : 'Could not load the voice configuration.')
@@ -54,12 +63,27 @@ export default function App() {
   }, [])
 
   const selectedPipeline = config?.pipelines.find((item) => item.id === pipeline)
-  const selectedVoice = config?.voices.find((item) => item.id === voice)
+  const selectedProvider = config?.voices.find((item) => item.id === provider)
   const cascade = pipeline === 'cascade'
-  const agentLabel = cascade ? selectedVoice?.label : selectedPipeline?.label
+  const availableVoices = cascade ? selectedProvider?.voices : selectedPipeline?.voices
+  const selectedVoice = availableVoices?.find((item) => item.id === voice)
+  const agentLabel = selectedVoice?.label ?? selectedPipeline?.label
   const connected = state === 'ready' || state === 'connected'
   const busy = !['disconnected', 'connected', 'ready', 'error'].includes(state)
-  const ready = Boolean(selectedPipeline?.ready && (!cascade || selectedVoice?.ready))
+  const ready = Boolean(selectedPipeline?.ready && selectedVoice && (!cascade || selectedProvider?.ready))
+
+  function choosePipeline(nextPipeline: string) {
+    setPipeline(nextPipeline)
+    const next = config?.pipelines.find((item) => item.id === nextPipeline)
+    if (nextPipeline !== 'cascade') setVoice(next?.defaultVoice ?? next?.voices[0]?.id ?? '')
+    else setVoice(selectedProvider?.defaultVoice ?? '')
+  }
+
+  function chooseProvider(nextProvider: string) {
+    setProvider(nextProvider)
+    const next = config?.voices.find((item) => item.id === nextProvider)
+    setVoice(next?.defaultVoice ?? next?.voices[0]?.id ?? '')
+  }
 
   async function connect() {
     setError('')
@@ -132,7 +156,7 @@ export default function App() {
       await client.connect({
         webrtcRequestParams: {
           endpoint: '/api/offer',
-          requestData: { pipeline, model, voice },
+          requestData: { pipeline, model, provider, voice },
         },
       })
     } catch (cause) {
@@ -170,45 +194,49 @@ export default function App() {
         </div>
       </header>
 
-      <section className={`controls ${cascade ? '' : 'native'}`} aria-label="Conversation configuration">
-        <label>
-          Agent pipeline
-          <select value={pipeline} onChange={(event) => setPipeline(event.target.value)} disabled={connected || busy}>
+      <section className="controls" aria-label="Conversation configuration">
+        <div className="control-group pipeline-group">
+          <label htmlFor="pipeline">Conversation pipeline</label>
+          <select id="pipeline" value={pipeline} onChange={(event) => choosePipeline(event.target.value)} disabled={connected || busy}>
             {config?.pipelines.map((item) => (
               <option key={item.id} value={item.id}>
                 {item.label}{item.ready ? '' : ' · needs key'}
               </option>
             ))}
           </select>
-        </label>
+          <p className="helper">{selectedPipeline?.description}</p>
+        </div>
         {cascade ? (
           <>
-            <label>
-              GPT model
-              <select value={model} onChange={(event) => setModel(event.target.value)} disabled={connected || busy}>
+            <div className="control-group">
+              <label htmlFor="model">Reasoning model</label>
+              <select id="model" value={model} onChange={(event) => setModel(event.target.value)} disabled={connected || busy}>
                 {config?.models.map((item) => (
                   <option key={item.id} value={item.id}>{item.label}</option>
                 ))}
               </select>
-            </label>
-            <label>
-              Voice provider
-              <select value={voice} onChange={(event) => setVoice(event.target.value)} disabled={connected || busy}>
+              <p className="helper">{config?.models.find((item) => item.id === model)?.description}</p>
+            </div>
+            <div className="control-group">
+              <label htmlFor="provider">Speech provider</label>
+              <select id="provider" value={provider} onChange={(event) => chooseProvider(event.target.value)} disabled={connected || busy}>
                 {config?.voices.map((item) => (
                   <option key={item.id} value={item.id} disabled={!item.ready}>
                     {item.label} · {item.model}{item.ready ? '' : ' · needs key'}
                   </option>
                 ))}
               </select>
-            </label>
+              <p className="helper">{selectedProvider?.description}</p>
+            </div>
           </>
-        ) : (
-          <div className="native-model">
-            <small>Native model</small>
-            <strong>{selectedPipeline?.model}</strong>
-            <span>Speech in → speech out</span>
-          </div>
-        )}
+        ) : <div className="native-model"><small>Native model</small><strong>{selectedPipeline?.model}</strong><span>Speech in → speech out</span></div>}
+        <div className="control-group voice-group">
+          <label htmlFor="voice">Agent voice</label>
+          <select id="voice" value={voice} onChange={(event) => setVoice(event.target.value)} disabled={connected || busy || !availableVoices?.length}>
+            {availableVoices?.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.description}</option>)}
+          </select>
+          <p className="helper">{selectedVoice?.description ?? 'Choose a configured provider first.'}</p>
+        </div>
         {connected ? (
           <button className="call stop" onClick={disconnect} disabled={busy}>End conversation</button>
         ) : (
@@ -221,7 +249,7 @@ export default function App() {
       {!ready && config && (
         <aside className="setup">
           Add the missing values to <code>.env</code> and restart: {' '}
-          {[...(selectedPipeline?.missing ?? []), ...(cascade ? selectedVoice?.missing ?? [] : [])]
+          {[...(selectedPipeline?.missing ?? []), ...(cascade ? selectedProvider?.missing ?? [] : [])]
             .filter((item, index, all) => all.indexOf(item) === index)
             .join(', ')}
         </aside>
