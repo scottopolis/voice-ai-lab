@@ -1,0 +1,20 @@
+{
+  "adHocServices": {
+    "voice-ai-lab": {
+      "name": "voice-ai-lab",
+      "command": "API_PORT=18787 npm run dev",
+      "env": {},
+      "portals": [
+        {
+          "url": "/",
+          "title": "voice-ai-lab"
+        }
+      ],
+      "health": null,
+      "review": true,
+      "agent": "off",
+      "cwd": "/home/user/workspace/repo/latest-voice-ai-lab",
+      "port": 30397
+    }
+  }
+}
