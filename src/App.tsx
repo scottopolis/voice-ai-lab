@@ -29,6 +29,7 @@ export default function App() {
   const [botDraft, setBotDraft] = useState('')
   const [error, setError] = useState('')
   const clientRef = useRef<PipecatClient | null>(null)
+  const botAudioRef = useRef<HTMLAudioElement | null>(null)
   const botDraftRef = useRef('')
 
   useEffect(() => {
@@ -79,6 +80,19 @@ export default function App() {
         onUserStoppedSpeaking: () => setActivity('Thinking'),
         onBotStartedSpeaking: () => setActivity('Agent speaking'),
         onBotStoppedSpeaking: () => setActivity('Listening'),
+        onTrackStarted: (track) => {
+          const audio = botAudioRef.current
+          if (track.kind !== 'audio' || !audio) return
+          audio.srcObject = new MediaStream([track])
+          void audio.play().catch(() => {
+            setError('Your browser blocked audio playback. Allow sound for this page and reconnect.')
+          })
+        },
+        onTrackStopped: (track) => {
+          if (track.kind === 'audio' && botAudioRef.current) {
+            botAudioRef.current.srcObject = null
+          }
+        },
         onUserTranscript: (data) => {
           if (data.final) {
             setMessages((current) => [...current, { role: 'you', text: data.text }])
@@ -102,7 +116,13 @@ export default function App() {
           setBotDraft('')
         },
         onError: (message) => setError(messageText(message)),
-        onDisconnected: () => setActivity('Ready to connect'),
+        onDisconnected: () => {
+          if (botAudioRef.current) {
+            botAudioRef.current.pause()
+            botAudioRef.current.srcObject = null
+          }
+          setActivity('Ready to connect')
+        },
       },
     })
     clientRef.current = client
@@ -133,6 +153,7 @@ export default function App() {
 
   return (
     <main>
+      <audio ref={botAudioRef} autoPlay />
       <header>
         <div>
           <p className="eyebrow">Conversational voice lab</p>
