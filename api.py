@@ -44,18 +44,21 @@ async def offer(raw_request: Request, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail="Invalid WebRTC offer") from error
 
     selection = request.request_data if isinstance(request.request_data, dict) else {}
+    pipeline_id = selection.get("pipeline")
     model_id = selection.get("model")
     voice_id = selection.get("voice")
-    if not isinstance(model_id, str) or not isinstance(voice_id, str):
-        raise HTTPException(status_code=400, detail="Select a GPT model and voice provider")
+    if not all(isinstance(value, str) for value in (pipeline_id, model_id, voice_id)):
+        raise HTTPException(status_code=400, detail="Select an agent pipeline")
 
     try:
-        validate_selection(model_id, voice_id)
+        validate_selection(pipeline_id, model_id, voice_id)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     async def start_agent(connection):
-        background_tasks.add_task(run_voice_agent, connection, model_id, voice_id)
+        background_tasks.add_task(
+            run_voice_agent, connection, pipeline_id, model_id, voice_id
+        )
 
     return await webrtc_handler.handle_web_request(
         request=request,

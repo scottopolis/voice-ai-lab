@@ -1,4 +1,4 @@
-pipecat-ai[webrtc,deepgram,openai,cartesia,elevenlabs,hume,xai]==1.8.1
+pipecat-ai[webrtc,deepgram,openai,google,cartesia,elevenlabs,hume,xai]==1.8.1
 fastapi==0.141.1
 python-dotenv==1.2.2
 uvicorn==0.52.4

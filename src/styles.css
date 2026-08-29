@@ -23,10 +23,15 @@ h1 em { color: #df5b3f; font-family: 'Playfair Display', serif; }
 .status span { width: 9px; height: 9px; border-radius: 50%; background: #9ca9a4; }
 .status.live span { background: #24a56f; box-shadow: 0 0 0 5px #24a56f1f; }
 
-.controls { display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; gap: 14px; padding: 22px; border: 1px solid #cad5cc; border-radius: 18px; background: #fbfcf6; box-shadow: 0 18px 50px #526b5b13; }
+.controls { display: grid; grid-template-columns: 1fr 1fr 1fr auto; align-items: end; gap: 14px; padding: 22px; border: 1px solid #cad5cc; border-radius: 18px; background: #fbfcf6; box-shadow: 0 18px 50px #526b5b13; }
+.controls.native { grid-template-columns: 1fr 2fr auto; }
 label { color: #587068; font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; }
 select { display: block; width: 100%; margin-top: 8px; padding: 13px 38px 13px 13px; border: 1px solid #bcc9c1; border-radius: 10px; background: white; color: #18342f; text-transform: none; letter-spacing: 0; }
 select:disabled { opacity: .65; }
+.native-model { display: grid; min-height: 66px; align-content: center; padding: 10px 14px; border: 1px solid #d5ddd6; border-radius: 10px; background: #f3f6f0; }
+.native-model small { color: #6b8079; font-size: 10px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; }
+.native-model strong { margin-top: 2px; font-size: 14px; }
+.native-model span { margin-top: 2px; color: #71857f; font-size: 11px; }
 .call { min-width: 176px; height: 47px; padding: 0 20px; border: 0; border-radius: 999px; background: #18342f; color: white; font-weight: 600; }
 .call.stop { background: #df5b3f; }
 .call:disabled { cursor: not-allowed; opacity: .42; }
@@ -56,7 +61,7 @@ footer { margin: 22px 0; color: #71857f; font-size: 12px; text-align: center; }
   main { width: min(100% - 28px, 1040px); padding-top: 34px; }
   header { display: block; }
   .status { width: max-content; margin-top: 22px; }
-  .controls { grid-template-columns: 1fr; }
+  .controls, .controls.native { grid-template-columns: 1fr; }
   .call { width: 100%; }
   article { max-width: 90%; }
 }

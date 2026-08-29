@@ -15,8 +15,19 @@ from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
 from pipecat.services.deepgram.flux.tts import DeepgramFluxTTSService
 from pipecat.services.elevenlabs.dialogue.tts import ElevenLabsDialogueTTSService
+from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
 from pipecat.services.hume.tts import HumeTTSService
 from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.services.openai.realtime.events import (
+    AudioConfiguration,
+    AudioInput,
+    AudioOutput,
+    InputAudioNoiseReduction,
+    InputAudioTranscription,
+    SemanticTurnDetection,
+    SessionProperties,
+)
+from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 from pipecat.services.openai.tts import OpenAITTSService
 from pipecat.services.xai.tts import XAITTSService
 from pipecat.transports.base_transport import TransportParams
@@ -52,11 +63,50 @@ class VoiceOption:
         return [name for name in self.required_env if not os.getenv(name)]
 
 
+@dataclass(frozen=True)
+class PipelineOption:
+    id: str
+    label: str
+    model: str
+    required_env: tuple[str, ...]
+
+    @property
+    def ready(self) -> bool:
+        return all(os.getenv(name) for name in self.required_env)
+
+    @property
+    def missing(self) -> list[str]:
+        return [name for name in self.required_env if not os.getenv(name)]
+
+
 LLM_MODELS = (
     ModelOption("gpt-5.6-terra", "GPT-5.6 Terra"),
     ModelOption("gpt-5.6-luna", "GPT-5.6 Luna"),
     ModelOption("gpt-5.4-mini", "GPT-5.4 Mini"),
 )
+
+
+def _pipeline_options() -> tuple[PipelineOption, ...]:
+    return (
+        PipelineOption(
+            id="cascade",
+            label="Swappable cascade",
+            model="Deepgram → GPT → selected voice",
+            required_env=("OPENAI_API_KEY", "DEEPGRAM_API_KEY"),
+        ),
+        PipelineOption(
+            id="openai-realtime",
+            label="OpenAI Realtime",
+            model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1"),
+            required_env=("OPENAI_API_KEY",),
+        ),
+        PipelineOption(
+            id="gemini-live",
+            label="Gemini Live",
+            model=os.getenv("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview"),
+            required_env=("GOOGLE_API_KEY",),
+        ),
+    )
 
 
 def _voice_options() -> tuple[VoiceOption, ...]:
@@ -146,14 +196,16 @@ def _voice_options() -> tuple[VoiceOption, ...]:
 
 def public_config() -> dict:
     return {
-        "core": {
-            "ready": bool(os.getenv("OPENAI_API_KEY") and os.getenv("DEEPGRAM_API_KEY")),
-            "missing": [
-                name
-                for name in ("OPENAI_API_KEY", "DEEPGRAM_API_KEY")
-                if not os.getenv(name)
-            ],
-        },
+        "pipelines": [
+            {
+                "id": pipeline.id,
+                "label": pipeline.label,
+                "model": pipeline.model,
+                "ready": pipeline.ready,
+                "missing": pipeline.missing,
+            }
+            for pipeline in _pipeline_options()
+        ],
         "models": [{"id": model.id, "label": model.label} for model in LLM_MODELS],
         "voices": [
             {
@@ -168,7 +220,22 @@ def public_config() -> dict:
     }
 
 
-def validate_selection(model_id: str, voice_id: str) -> VoiceOption:
+def validate_selection(
+    pipeline_id: str, model_id: str, voice_id: str
+) -> tuple[PipelineOption, VoiceOption | None]:
+    pipeline = next(
+        (item for item in _pipeline_options() if item.id == pipeline_id), None
+    )
+    if pipeline is None:
+        raise ValueError("Unknown agent pipeline")
+
+    if pipeline_id != "cascade":
+        if pipeline.missing:
+            raise ValueError(
+                f"Missing environment variables: {', '.join(pipeline.missing)}"
+            )
+        return pipeline, None
+
     if model_id not in {model.id for model in LLM_MODELS}:
         raise ValueError("Unknown GPT model")
 
@@ -176,19 +243,22 @@ def validate_selection(model_id: str, voice_id: str) -> VoiceOption:
     if voice is None:
         raise ValueError("Unknown voice provider")
 
-    missing = [
-        name
-        for name in ("OPENAI_API_KEY", "DEEPGRAM_API_KEY", *voice.required_env)
-        if not os.getenv(name)
-    ]
+    missing = [*pipeline.missing, *voice.missing]
     if missing:
         raise ValueError(f"Missing environment variables: {', '.join(dict.fromkeys(missing))}")
-    return voice
+    return pipeline, voice
 
 
-async def run_voice_agent(connection, model_id: str, voice_id: str) -> None:
-    voice = validate_selection(model_id, voice_id)
-    logger.info("Starting voice session: model={} voice={}", model_id, voice.id)
+async def run_voice_agent(
+    connection, pipeline_id: str, model_id: str, voice_id: str
+) -> None:
+    pipeline_option, voice = validate_selection(pipeline_id, model_id, voice_id)
+    logger.info(
+        "Starting voice session: pipeline={} model={} voice={}",
+        pipeline_id,
+        model_id,
+        voice_id,
+    )
 
     transport = SmallWebRTCTransport(
         webrtc_connection=connection,
@@ -198,32 +268,82 @@ async def run_voice_agent(connection, model_id: str, voice_id: str) -> None:
             audio_out_10ms_chunks=2,
         ),
     )
-    stt = DeepgramFluxSTTService(api_key=os.environ["DEEPGRAM_API_KEY"])
-    llm = OpenAILLMService(
-        api_key=os.environ["OPENAI_API_KEY"],
-        settings=OpenAILLMService.Settings(
-            model=model_id,
-            system_instruction=SYSTEM_INSTRUCTION,
-        ),
-    )
-    tts = voice.create()
 
     context = LLMContext()
-    user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
-        context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
-    )
-    pipeline = Pipeline(
-        [
+    if pipeline_option.id == "cascade":
+        assert voice is not None
+        stt = DeepgramFluxSTTService(api_key=os.environ["DEEPGRAM_API_KEY"])
+        llm = OpenAILLMService(
+            api_key=os.environ["OPENAI_API_KEY"],
+            settings=OpenAILLMService.Settings(
+                model=model_id,
+                system_instruction=SYSTEM_INSTRUCTION,
+            ),
+        )
+        user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
+            context,
+            user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        )
+        processors = [
             transport.input(),
             stt,
             user_aggregator,
             llm,
-            tts,
+            voice.create(),
             transport.output(),
             assistant_aggregator,
         ]
-    )
+    elif pipeline_option.id == "openai-realtime":
+        llm = OpenAIRealtimeLLMService(
+            api_key=os.environ["OPENAI_API_KEY"],
+            settings=OpenAIRealtimeLLMService.Settings(
+                model=pipeline_option.model,
+                system_instruction=SYSTEM_INSTRUCTION,
+                session_properties=SessionProperties(
+                    audio=AudioConfiguration(
+                        input=AudioInput(
+                            transcription=InputAudioTranscription(),
+                            turn_detection=SemanticTurnDetection(),
+                            noise_reduction=InputAudioNoiseReduction(type="near_field"),
+                        ),
+                        output=AudioOutput(
+                            voice=os.getenv("OPENAI_REALTIME_VOICE", "marin")
+                        ),
+                    )
+                ),
+            ),
+        )
+        user_aggregator, assistant_aggregator = LLMContextAggregatorPair(context)
+        processors = [
+            transport.input(),
+            user_aggregator,
+            llm,
+            transport.output(),
+            assistant_aggregator,
+        ]
+    else:
+        llm = GeminiLiveLLMService(
+            api_key=os.environ["GOOGLE_API_KEY"],
+            settings=GeminiLiveLLMService.Settings(
+                model=pipeline_option.model,
+                voice=os.getenv("GEMINI_LIVE_VOICE", "Kore"),
+                system_instruction=SYSTEM_INSTRUCTION,
+            ),
+            inference_on_context_initialization=False,
+        )
+        user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
+            context,
+            user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        )
+        processors = [
+            transport.input(),
+            user_aggregator,
+            llm,
+            transport.output(),
+            assistant_aggregator,
+        ]
+
+    pipeline = Pipeline(processors)
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(

@@ -4,8 +4,9 @@ import { SmallWebRTCTransport } from '@pipecat-ai/small-webrtc-transport'
 
 type Option = { id: string; label: string }
 type Voice = Option & { model: string; ready: boolean; missing: string[] }
+type AgentPipeline = Voice
 type Config = {
-  core: { ready: boolean; missing: string[] }
+  pipelines: AgentPipeline[]
   models: Option[]
   voices: Voice[]
 }
@@ -18,6 +19,7 @@ const messageText = (message: RTVIMessage) => {
 
 export default function App() {
   const [config, setConfig] = useState<Config | null>(null)
+  const [pipeline, setPipeline] = useState('cascade')
   const [model, setModel] = useState('')
   const [voice, setVoice] = useState('')
   const [state, setState] = useState<TransportState>('disconnected')
@@ -37,6 +39,7 @@ export default function App() {
       })
       .then((next) => {
         setConfig(next)
+        setPipeline(next.pipelines.find((item) => item.ready)?.id ?? next.pipelines[0]?.id ?? '')
         setModel(next.models[0]?.id ?? '')
         setVoice(next.voices.find((item) => item.ready)?.id ?? next.voices[0]?.id ?? '')
       })
@@ -49,10 +52,13 @@ export default function App() {
     }
   }, [])
 
+  const selectedPipeline = config?.pipelines.find((item) => item.id === pipeline)
   const selectedVoice = config?.voices.find((item) => item.id === voice)
+  const cascade = pipeline === 'cascade'
+  const agentLabel = cascade ? selectedVoice?.label : selectedPipeline?.label
   const connected = state === 'ready' || state === 'connected'
   const busy = !['disconnected', 'connected', 'ready', 'error'].includes(state)
-  const ready = Boolean(config?.core.ready && selectedVoice?.ready)
+  const ready = Boolean(selectedPipeline?.ready && (!cascade || selectedVoice?.ready))
 
   async function connect() {
     setError('')
@@ -106,7 +112,7 @@ export default function App() {
       await client.connect({
         webrtcRequestParams: {
           endpoint: '/api/offer',
-          requestData: { model, voice },
+          requestData: { pipeline, model, voice },
         },
       })
     } catch (cause) {
@@ -135,7 +141,7 @@ export default function App() {
             <em>Swap the voice.</em>
           </h1>
           <p className="intro">
-            One live Deepgram → OpenAI → voice pipeline, orchestrated by Pipecat.
+            Compare native speech-to-speech agents with a swappable STT → GPT → voice cascade.
           </p>
         </div>
         <div className={`status ${connected ? 'live' : ''}`}>
@@ -143,25 +149,45 @@ export default function App() {
         </div>
       </header>
 
-      <section className="controls" aria-label="Conversation configuration">
+      <section className={`controls ${cascade ? '' : 'native'}`} aria-label="Conversation configuration">
         <label>
-          GPT model
-          <select value={model} onChange={(event) => setModel(event.target.value)} disabled={connected || busy}>
-            {config?.models.map((item) => (
-              <option key={item.id} value={item.id}>{item.label}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Voice provider
-          <select value={voice} onChange={(event) => setVoice(event.target.value)} disabled={connected || busy}>
-            {config?.voices.map((item) => (
-              <option key={item.id} value={item.id} disabled={!item.ready}>
-                {item.label} · {item.model}{item.ready ? '' : ' · needs key'}
+          Agent pipeline
+          <select value={pipeline} onChange={(event) => setPipeline(event.target.value)} disabled={connected || busy}>
+            {config?.pipelines.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}{item.ready ? '' : ' · needs key'}
               </option>
             ))}
           </select>
         </label>
+        {cascade ? (
+          <>
+            <label>
+              GPT model
+              <select value={model} onChange={(event) => setModel(event.target.value)} disabled={connected || busy}>
+                {config?.models.map((item) => (
+                  <option key={item.id} value={item.id}>{item.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Voice provider
+              <select value={voice} onChange={(event) => setVoice(event.target.value)} disabled={connected || busy}>
+                {config?.voices.map((item) => (
+                  <option key={item.id} value={item.id} disabled={!item.ready}>
+                    {item.label} · {item.model}{item.ready ? '' : ' · needs key'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        ) : (
+          <div className="native-model">
+            <small>Native model</small>
+            <strong>{selectedPipeline?.model}</strong>
+            <span>Speech in → speech out</span>
+          </div>
+        )}
         {connected ? (
           <button className="call stop" onClick={disconnect} disabled={busy}>End conversation</button>
         ) : (
@@ -174,7 +200,9 @@ export default function App() {
       {!ready && config && (
         <aside className="setup">
           Add the missing values to <code>.env</code> and restart: {' '}
-          {[...config.core.missing, ...(selectedVoice?.missing ?? [])].filter((item, index, all) => all.indexOf(item) === index).join(', ')}
+          {[...(selectedPipeline?.missing ?? []), ...(cascade ? selectedVoice?.missing ?? [] : [])]
+            .filter((item, index, all) => all.indexOf(item) === index)
+            .join(', ')}
         </aside>
       )}
       {error && <p className="error" role="alert">{error}</p>}
@@ -190,17 +218,17 @@ export default function App() {
           <div className="transcript">
             {messages.map((message, index) => (
               <article className={message.role} key={`${message.role}-${index}`}>
-                <small>{message.role === 'you' ? 'You' : selectedVoice?.label}</small>
+                <small>{message.role === 'you' ? 'You' : agentLabel}</small>
                 <p>{message.text}</p>
               </article>
             ))}
             {userDraft && <article className="you draft"><small>You</small><p>{userDraft}</p></article>}
-            {botDraft && <article className="agent draft"><small>{selectedVoice?.label}</small><p>{botDraft}</p></article>}
+            {botDraft && <article className="agent draft"><small>{agentLabel}</small><p>{botDraft}</p></article>}
           </div>
         )}
       </section>
 
-      <footer>Selections lock while connected. End the conversation to swap either model.</footer>
+      <footer>Selections lock while connected. End the conversation to change pipelines.</footer>
     </main>
   )
 }
