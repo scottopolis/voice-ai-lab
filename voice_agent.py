@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.frames.frames import LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -334,6 +335,7 @@ async def run_voice_agent(
         webrtc_connection=connection,
         params=TransportParams(
             audio_in_enabled=True,
+            audio_in_passthrough=True,
             audio_out_enabled=True,
             audio_out_10ms_chunks=2,
         ),
@@ -421,6 +423,12 @@ async def run_voice_agent(
             enable_metrics=True,
         ),
     )
+
+    @transport.event_handler("on_client_connected")
+    async def on_client_connected(_transport, _client):
+        if pipeline_option.id != "cascade":
+            logger.info("Initializing native realtime context")
+            await worker.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport, _client):
